@@ -36,7 +36,10 @@ jobs:
             exit 1
           fi
           ISSUE_KEY="${REPOSITORY}#${ISSUE_NUMBER}"
-          ENCODED_CONFIG=$(jq -cn --arg jql "${ISSUE_KEY}" '{params: {inputJql: $jql}}')
+          # The repository is passed explicitly so agents work on the repository that received the
+          # issue, not on the one hardcoded in the project's .dmtools/config.js (epam/dm.ai).
+          ENCODED_CONFIG=$(jq -cn --arg jql "${ISSUE_KEY}" --arg owner "${REPOSITORY%%/*}" --arg repo "${REPOSITORY#*/}" \
+            '{params: {inputJql: $jql, repository: {owner: $owner, repo: $repo}}}')
           echo "Dispatching ${CONFIG_FILE} for ${ISSUE_KEY}"
           gh workflow run ai-teammate.yml \
             --repo "${REPOSITORY}" \
