@@ -131,6 +131,10 @@ public class CliExecutionHelper {
         return createInputContext(ticket, inputParams, trackerClient, baseDirectory, attachmentsOverride, false);
     }
 
+    static String toInputFolderName(String ticketKey) {
+        return ticketKey.replaceAll("[^A-Za-z0-9._-]", "-");
+    }
+
     Path createInputContext(ITicket ticket, String inputParams, TrackerClient<?> trackerClient,
                             Path baseDirectory, List<? extends IAttachment> attachmentsOverride,
                             boolean relationsAlreadyEnriched) throws IOException {
@@ -141,9 +145,10 @@ public class CliExecutionHelper {
         }
 
         // Create input folder structure: [baseDirectory/]input/[TICKET-KEY]/ or input/standalone/
+        String folderName = toInputFolderName(ticketKey);
         Path inputFolderPath = baseDirectory != null
-                ? baseDirectory.resolve(INPUT_FOLDER_PREFIX).resolve(ticketKey)
-                : Paths.get(INPUT_FOLDER_PREFIX, ticketKey);
+                ? baseDirectory.resolve(INPUT_FOLDER_PREFIX).resolve(folderName)
+                : Paths.get(INPUT_FOLDER_PREFIX, folderName);
         Files.createDirectories(inputFolderPath);
         logger.info("Created input folder: {}", inputFolderPath.toAbsolutePath());
 
