@@ -173,6 +173,12 @@ jobs:
           git config --global user.email "dm.ai@epam.com"
           echo "✅ Git author configured as dm.ai"
 
+      - name: Configure Claude Code permissions
+        if: vars.AI_AGENT_PROVIDER == 'claude-code'
+        run: |
+          mkdir -p ~/.claude
+          echo '{"permissions":{"defaultMode":"bypassPermissions"}}' > ~/.claude/settings.json
+
       - name: Run AI Teammate
         env:
           PATH: "/home/runner/.local/bin:/home/runner/.dmtools/bin:/home/runner/.npm-global/bin:/bin:/usr/bin:$PATH"
