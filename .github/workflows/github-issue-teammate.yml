@@ -36,7 +36,10 @@ jobs:
             exit 1
           fi
           ISSUE_KEY="${REPOSITORY}#${ISSUE_NUMBER}"
-          ENCODED_CONFIG=$(jq -cn --arg jql "${ISSUE_KEY}" '{params: {inputJql: $jql}}')
+          # customParams.trackerProvider is set explicitly because the agent scripts' GraalJS
+          # context cannot read the DEFAULT_TRACKER env var and would fall back to Jira.
+          ENCODED_CONFIG=$(jq -cn --arg jql "${ISSUE_KEY}" \
+            '{params: {inputJql: $jql, customParams: {trackerProvider: "github"}}}')
           echo "Dispatching ${CONFIG_FILE} for ${ISSUE_KEY}"
           gh workflow run ai-teammate.yml \
             --repo "${REPOSITORY}" \
