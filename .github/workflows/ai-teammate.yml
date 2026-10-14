@@ -18,6 +18,9 @@ on:
       project_key:
         description: 'Project key for multi-project config selection (e.g., dmc)'
         required: false
+      tracker:
+        description: 'Issue tracker backend (jira, ado, github). Defaults to vars.DEFAULT_TRACKER or jira'
+        required: false
 
 permissions:
   contents: write
@@ -188,8 +191,8 @@ jobs:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-          SOURCE_GITHUB_WORKSPACE: epam
-          SOURCE_GITHUB_REPOSITORY: dm.ai
+          SOURCE_GITHUB_WORKSPACE: ${{ github.repository_owner }}
+          SOURCE_GITHUB_REPOSITORY: ${{ github.event.repository.name }}
 
           # AI / Gemini Configuration
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -206,7 +209,7 @@ jobs:
 
           # DMTools Integration Settings
           DMTOOLS_INTEGRATIONS: "jira,confluence,ado,figma,ai,cli,file,github"
-          DEFAULT_TRACKER: "jira"
+          DEFAULT_TRACKER: ${{ inputs.tracker || vars.DEFAULT_TRACKER || 'jira' }}
 
           # Encoded config input
           ENCODED_CONFIG: ${{ inputs.encoded_config }}
