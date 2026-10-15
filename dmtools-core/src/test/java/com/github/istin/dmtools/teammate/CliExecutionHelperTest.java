@@ -1538,9 +1538,15 @@ public class CliExecutionHelperTest {
     }
 
     @Test
-    void testToInputFolderName_GitHubCompositeKeyIsFlattened() {
-        assertEquals("acme-widgets-12", CliExecutionHelper.toInputFolderName("acme/widgets#12"));
-        assertEquals("epam-dm.ai-7", CliExecutionHelper.toInputFolderName("epam/dm.ai#7"));
+    void testToInputFolderName_GitHubCompositeKeyBecomesRouterKey() {
+        assertEquals("gh-12", CliExecutionHelper.toInputFolderName("acme/widgets#12"));
+        assertEquals("gh-7", CliExecutionHelper.toInputFolderName("epam/dm.ai#7"));
+        assertEquals("gh-2", CliExecutionHelper.toInputFolderName("ba3a/dm.ai#2"));
+    }
+
+    @Test
+    void testToInputFolderName_OtherUnsafeKeysAreStillFlattened() {
+        assertEquals("a-b-c", CliExecutionHelper.toInputFolderName("a/b#c"));
     }
 
     @Test

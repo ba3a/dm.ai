@@ -36,7 +36,14 @@ jobs:
             exit 1
           fi
           ISSUE_KEY="${REPOSITORY}#${ISSUE_NUMBER}"
-          ENCODED_CONFIG=$(jq -cn --arg jql "${ISSUE_KEY}" '{params: {inputJql: $jql}}')
+          # The repository is passed as customParams.targetRepository so agents work on the
+          # repository that received the issue, not on the one hardcoded in the project's
+          # .dmtools/config.js (epam/dm.ai). The typed job params drop an unknown top-level
+          # "repository" key; customParams reach the agent scripts unchanged.
+          # branchNamingFnPath names the working branch ai/gh-<number>; the default would embed
+          # the composite key ("ai/owner/repo#12"), which the agents reject as an unsafe ref.
+          ENCODED_CONFIG=$(jq -cn --arg jql "${ISSUE_KEY}" --arg owner "${REPOSITORY%%/*}" --arg repo "${REPOSITORY#*/}" \
+            '{params: {inputJql: $jql, customParams: {targetRepository: {owner: $owner, repo: $repo}, branchNamingFnPath: ".dmtools/branchNaming.js"}}}')
           echo "Dispatching ${CONFIG_FILE} for ${ISSUE_KEY}"
           gh workflow run ai-teammate.yml \
             --repo "${REPOSITORY}" \
