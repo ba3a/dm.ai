@@ -54,6 +54,9 @@ jobs:
         with:
           submodules: true
           token: ${{ secrets.PAT_TOKEN }}
+          # Branch setup compares the working branch with origin/main (merge-base, rev-list, diff).
+          # A shallow clone cannot answer those, so every branch looked thousands of commits ahead.
+          fetch-depth: 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v6.0.1
@@ -144,6 +147,13 @@ jobs:
 
       - name: Install DMTools v1.7.243
         run: bash agents/setup/install.sh dmtools:v1.7.243
+
+      # The pinned release can lag behind this repository. Set the repository variable
+      # DMTOOLS_BUILD_FROM_SOURCE to 'true' to run the jar built from this checkout instead,
+      # for example to use a tracker or tool that is not in a release yet.
+      - name: Build DMTools from source
+        if: vars.DMTOOLS_BUILD_FROM_SOURCE == 'true'
+        run: bash buildInstallLocal.sh
 
       - name: Install and init CodeGraph
         run: bash agents/setup/codegraph.sh
