@@ -179,6 +179,23 @@ jobs:
           mkdir -p ~/.claude
           echo '{"permissions":{"defaultMode":"bypassPermissions"}}' > ~/.claude/settings.json
 
+      - name: Disable Claude Code session resume
+        if: vars.AI_AGENT_PROVIDER == 'claude-code'
+        run: |
+          mkdir -p ~/.local/bin
+          cat > ~/.local/bin/claude <<'EOF'
+          #!/usr/bin/env bash
+          args=()
+          skip=0
+          for a in "$@"; do
+            if [ "$skip" = 1 ]; then skip=0; continue; fi
+            if [ "$a" = "--resume" ]; then skip=1; continue; fi
+            args+=("$a")
+          done
+          exec "$HOME/.npm-global/bin/claude" "${args[@]}"
+          EOF
+          chmod +x ~/.local/bin/claude
+
       - name: Run AI Teammate
         env:
           PATH: "/home/runner/.local/bin:/home/runner/.dmtools/bin:/home/runner/.npm-global/bin:/bin:/usr/bin:$PATH"
