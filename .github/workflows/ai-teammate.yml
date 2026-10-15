@@ -182,8 +182,10 @@ jobs:
       - name: Disable Claude Code session resume
         if: vars.AI_AGENT_PROVIDER == 'claude-code'
         run: |
-          mkdir -p ~/.local/bin
-          cat > ~/.local/bin/claude <<'EOF'
+          real="$(command -v claude)"
+          echo "claude binary: ${real}"
+          mv "${real}" "${real}.real"
+          cat > "${real}" <<'EOF'
           #!/usr/bin/env bash
           args=()
           skip=0
@@ -192,9 +194,9 @@ jobs:
             if [ "$a" = "--resume" ]; then skip=1; continue; fi
             args+=("$a")
           done
-          exec "$HOME/.npm-global/bin/claude" "${args[@]}"
+          exec "$0.real" "${args[@]}"
           EOF
-          chmod +x ~/.local/bin/claude
+          chmod +x "${real}"
 
       - name: Run AI Teammate
         env:
