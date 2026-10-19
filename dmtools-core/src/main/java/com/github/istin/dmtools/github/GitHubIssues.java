@@ -457,4 +457,92 @@ public abstract class GitHubIssues extends GitHub {
         postRequest.setBody(jsonObject.toString());
         return post(postRequest);
     }
+
+    /**
+     * Attach an existing issue as a sub-issue of a parent issue. The GitHub
+     * endpoint takes the child's REST {@code id} (not its number); when only a
+     * child key/number is given, the id is looked up first. A bare child number
+     * resolves against the parent's owner/repo.
+     */
+    @MCPTool(
+            name = "github_add_sub_issue",
+            description = "Attach an existing GitHub issue as a sub-issue of a parent issue. Pass the child's REST id (subIssueId) or its key/number (subIssueKey), which is resolved to the id.",
+            integration = "github",
+            category = "issues"
+    )
+    public String addSubIssue(
+            @MCPParam(name = "owner", description = "The parent repository owner (user or organization)", required = false, example = "IstiN", aliases = {"workspace"})
+            String owner,
+            @MCPParam(name = "repo", description = "The parent repository name", required = false, example = "dmtools", aliases = {"repository"})
+            String repo,
+            @MCPParam(name = "number", description = "The parent issue number", required = false, example = "42", aliases = {"issueNumber", "parentNumber"})
+            Integer number,
+            @MCPParam(name = "subIssueId", description = "The REST id (not the number) of the issue to attach as a sub-issue", required = false, example = "1234567890", aliases = {"sub_issue_id"})
+            Long subIssueId,
+            @MCPParam(name = "key", description = "Composite parent issue key 'owner/repo#123' (alternative to owner/repo/number)", required = false, example = "IstiN/dmtools#42", aliases = {"parentKey"})
+            String key,
+            @MCPParam(name = "subIssueKey", description = "Child issue key 'owner/repo#123' or a bare number in the parent's repository (alternative to subIssueId)", required = false, example = "IstiN/dmtools#43")
+            String subIssueKey) throws IOException {
+        IssueRef parent = resolveIssueRef(key, owner, repo, number);
+        long childId;
+        if (subIssueId != null) {
+            childId = subIssueId;
+        } else if (subIssueKey != null && !subIssueKey.trim().isEmpty()) {
+            IssueRef child = resolveIssueRef(subIssueKey,
+                    subIssueKey.contains("/") ? null : parent.owner,
+                    subIssueKey.contains("/") ? null : parent.repo, null);
+            String childPath = path(String.format("repos/%s/%s/issues/%d", child.owner, child.repo, child.number));
+            childId = new JSONObject(execute(new GenericRequest(this, childPath))).getLong("id");
+        } else {
+            throw new IllegalArgumentException("github_add_sub_issue requires subIssueId or subIssueKey.");
+        }
+        String path = path(String.format("repos/%s/%s/issues/%d/sub_issues", parent.owner, parent.repo, parent.number));
+        GenericRequest postRequest = new GenericRequest(this, path);
+        JSONObject jsonObject = new JSONObject();
+        jsonObject.put("sub_issue_id", childId);
+        postRequest.setBody(jsonObject.toString());
+        return post(postRequest);
+    }
+
+    /** List all sub-issues of a parent issue, following pagination, in the parent's order. */
+    @MCPTool(
+            name = "github_list_sub_issues",
+            description = "List all sub-issues of a GitHub issue (all pages), returned as a JSON array of issues in the parent's order.",
+            integration = "github",
+            category = "issues"
+    )
+    public String listSubIssues(
+            @MCPParam(name = "owner", description = "The parent repository owner (user or organization)", required = false, example = "IstiN", aliases = {"workspace"})
+            String owner,
+            @MCPParam(name = "repo", description = "The parent repository name", required = false, example = "dmtools", aliases = {"repository"})
+            String repo,
+            @MCPParam(name = "number", description = "The parent issue number", required = false, example = "42", aliases = {"issueNumber", "parentNumber"})
+            Integer number,
+            @MCPParam(name = "key", description = "Composite parent issue key 'owner/repo#123' (alternative to owner/repo/number)", required = false, example = "IstiN/dmtools#42", aliases = {"parentKey"})
+            String key) throws IOException {
+        IssueRef ref = resolveIssueRef(key, owner, repo, number);
+        JSONArray result = new JSONArray();
+        int perPage = 100;
+        int currentPage = 1;
+        while (true) {
+            String path = path(String.format("repos/%s/%s/issues/%d/sub_issues?per_page=%d&page=%d",
+                    ref.owner, ref.repo, ref.number, perPage, currentPage));
+            GenericRequest getRequest = new GenericRequest(this, path);
+            // Sub-issue membership changes as agents attach children; never serve it from cache.
+            getRequest.setIgnoreCache(true);
+            String response = execute(getRequest);
+            if (response == null || response.isEmpty()) {
+                break;
+            }
+            JSONArray pageArray = new JSONArray(response);
+            for (int i = 0; i < pageArray.length(); i++) {
+                result.put(pageArray.get(i));
+            }
+            if (pageArray.length() < perPage) {
+                break;
+            }
+            currentPage++;
+        }
+        return result.toString();
+    }
 }
