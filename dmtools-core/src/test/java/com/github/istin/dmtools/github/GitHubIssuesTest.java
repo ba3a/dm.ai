@@ -8,6 +8,7 @@ import com.github.istin.dmtools.common.model.IComment;
 import com.github.istin.dmtools.common.networking.GenericRequest;
 import com.github.istin.dmtools.common.networking.RestClient;
 import com.github.istin.dmtools.github.model.GitHubIssue;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Before;
 import org.junit.Test;
@@ -209,6 +210,140 @@ public class GitHubIssuesTest {
             fail("Expected IOException for non-404 error");
         } catch (IOException e) {
             assertEquals(500, ((RestClient.RestClientException) e).getCode());
+        }
+    }
+
+    @Test
+    public void testAddSubIssuePostsChildRestId() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        doReturn("{\"number\":7,\"sub_issues_summary\":{\"total\":1}}")
+                .when(spy).post(any(GenericRequest.class));
+
+        String result = spy.addSubIssue("acme", "widgets", 7, 9876543210L, null, null);
+
+        assertTrue(result.contains("\"number\":7"));
+
+        ArgumentCaptor<GenericRequest> captor = ArgumentCaptor.forClass(GenericRequest.class);
+        verify(spy).post(captor.capture());
+        assertEquals("https://api.github.com/repos/acme/widgets/issues/7/sub_issues", captor.getValue().url());
+        JSONObject body = new JSONObject(captor.getValue().getBody());
+        assertEquals(9876543210L, body.getLong("sub_issue_id"));
+    }
+
+    @Test
+    public void testAddSubIssueAcceptsCompositeParentKey() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        doReturn("{}").when(spy).post(any(GenericRequest.class));
+
+        spy.addSubIssue(null, null, null, 55L, "acme/widgets#12", null);
+
+        ArgumentCaptor<GenericRequest> captor = ArgumentCaptor.forClass(GenericRequest.class);
+        verify(spy).post(captor.capture());
+        assertEquals("https://api.github.com/repos/acme/widgets/issues/12/sub_issues", captor.getValue().url());
+    }
+
+    @Test
+    public void testAddSubIssueResolvesChildNumberToRestIdInParentRepo() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        doReturn("{\"id\":424242,\"number\":13}").when(spy).execute(any(GenericRequest.class));
+        doReturn("{}").when(spy).post(any(GenericRequest.class));
+
+        spy.addSubIssue(null, null, null, null, "acme/widgets#12", "13");
+
+        ArgumentCaptor<GenericRequest> getCaptor = ArgumentCaptor.forClass(GenericRequest.class);
+        verify(spy).execute(getCaptor.capture());
+        assertEquals("https://api.github.com/repos/acme/widgets/issues/13", getCaptor.getValue().url());
+
+        ArgumentCaptor<GenericRequest> postCaptor = ArgumentCaptor.forClass(GenericRequest.class);
+        verify(spy).post(postCaptor.capture());
+        assertEquals(424242L, new JSONObject(postCaptor.getValue().getBody()).getLong("sub_issue_id"));
+    }
+
+    @Test
+    public void testAddSubIssueRequiresChild() {
+        try {
+            gitHub.addSubIssue("acme", "widgets", 7, null, null, null);
+            fail("Expected IllegalArgumentException when no child is given");
+        } catch (IllegalArgumentException | IOException e) {
+            assertTrue(e instanceof IllegalArgumentException);
+        }
+    }
+
+    @Test
+    public void testAddSubIssuePropagatesErrorResponse() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        doThrow(new RestClient.RestClientException("validation failed", "{\"message\":\"Validation Failed\"}", 422))
+                .when(spy).post(any(GenericRequest.class));
+
+        try {
+            spy.addSubIssue("acme", "widgets", 7, 1L, null, null);
+            fail("Expected IOException for 422 response");
+        } catch (IOException e) {
+            assertEquals(422, ((RestClient.RestClientException) e).getCode());
+        }
+    }
+
+    @Test
+    public void testListSubIssuesSinglePage() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        doReturn("[{\"number\":2},{\"number\":1}]").when(spy).execute(any(GenericRequest.class));
+
+        JSONArray result = new JSONArray(spy.listSubIssues(null, null, null, "acme/widgets#7"));
+
+        assertEquals(2, result.length());
+        assertEquals(2, result.getJSONObject(0).getInt("number"));
+        assertEquals(1, result.getJSONObject(1).getInt("number"));
+
+        ArgumentCaptor<GenericRequest> captor = ArgumentCaptor.forClass(GenericRequest.class);
+        verify(spy).execute(captor.capture());
+        assertEquals("https://api.github.com/repos/acme/widgets/issues/7/sub_issues?per_page=100&page=1",
+                captor.getValue().url());
+        assertTrue(captor.getValue().isIgnoreCache());
+    }
+
+    @Test
+    public void testListSubIssuesFollowsPaginationInOrder() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        JSONArray fullPage = new JSONArray();
+        for (int i = 1; i <= 100; i++) {
+            fullPage.put(new JSONObject().put("number", i));
+        }
+        doReturn(fullPage.toString())
+                .doReturn("[{\"number\":101},{\"number\":102}]")
+                .when(spy).execute(any(GenericRequest.class));
+
+        JSONArray result = new JSONArray(spy.listSubIssues("acme", "widgets", 7, null));
+
+        assertEquals(102, result.length());
+        for (int i = 0; i < result.length(); i++) {
+            assertEquals(i + 1, result.getJSONObject(i).getInt("number"));
+        }
+
+        ArgumentCaptor<GenericRequest> captor = ArgumentCaptor.forClass(GenericRequest.class);
+        verify(spy, times(2)).execute(captor.capture());
+        assertTrue(captor.getAllValues().get(0).url().endsWith("sub_issues?per_page=100&page=1"));
+        assertTrue(captor.getAllValues().get(1).url().endsWith("sub_issues?per_page=100&page=2"));
+    }
+
+    @Test
+    public void testListSubIssuesEmpty() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        doReturn("[]").when(spy).execute(any(GenericRequest.class));
+
+        assertEquals(0, new JSONArray(spy.listSubIssues("acme", "widgets", 7, null)).length());
+    }
+
+    @Test
+    public void testListSubIssuesPropagatesErrorResponse() throws Exception {
+        GitHubIssues spy = spy(gitHub);
+        doThrow(new RestClient.RestClientException("not found", "{\"message\":\"Not Found\"}", 404))
+                .when(spy).execute(any(GenericRequest.class));
+
+        try {
+            spy.listSubIssues("acme", "widgets", 7, null);
+            fail("Expected IOException for 404 response");
+        } catch (IOException e) {
+            assertEquals(404, ((RestClient.RestClientException) e).getCode());
         }
     }
 }

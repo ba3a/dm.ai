@@ -2756,6 +2756,80 @@
       "description": "Dismiss a review on a GitHub pull request"
     },
     {
+      "name": "github_add_sub_issue",
+      "integration": "github",
+      "description": "Attach an existing GitHub issue as a sub-issue of a parent issue. Pass the child's REST id (subIssueId) or its key/number (subIssueKey), which is resolved to the id.",
+      "inputSchema": {
+        "properties": {
+          "owner": {
+            "example": "IstiN",
+            "type": "string",
+            "description": "The parent repository owner (user or organization)"
+          },
+          "repo": {
+            "example": "dmtools",
+            "type": "string",
+            "description": "The parent repository name"
+          },
+          "number": {
+            "example": "42",
+            "type": "number",
+            "description": "The parent issue number"
+          },
+          "subIssueId": {
+            "example": "1234567890",
+            "type": "number",
+            "description": "The REST id (not the number) of the issue to attach as a sub-issue"
+          },
+          "key": {
+            "example": "IstiN/dmtools#42",
+            "type": "string",
+            "description": "Composite parent issue key 'owner/repo#123' (alternative to owner/repo/number)"
+          },
+          "subIssueKey": {
+            "example": "IstiN/dmtools#43",
+            "type": "string",
+            "description": "Child issue key 'owner/repo#123' or a bare number in the parent's repository (alternative to subIssueId)"
+          }
+        },
+        "type": "object",
+        "required": []
+      },
+      "category": "issues"
+    },
+    {
+      "name": "github_list_sub_issues",
+      "integration": "github",
+      "description": "List all sub-issues of a GitHub issue (all pages), returned as a JSON array of issues in the parent's order.",
+      "inputSchema": {
+        "properties": {
+          "owner": {
+            "example": "IstiN",
+            "type": "string",
+            "description": "The parent repository owner (user or organization)"
+          },
+          "repo": {
+            "example": "dmtools",
+            "type": "string",
+            "description": "The parent repository name"
+          },
+          "number": {
+            "example": "42",
+            "type": "number",
+            "description": "The parent issue number"
+          },
+          "key": {
+            "example": "IstiN/dmtools#42",
+            "type": "string",
+            "description": "Composite parent issue key 'owner/repo#123' (alternative to owner/repo/number)"
+          }
+        },
+        "type": "object",
+        "required": []
+      },
+      "category": "issues"
+    },
+    {
       "integration": "confluence",
       "name": "confluence_contents_by_urls",
       "category": "content_retrieval",

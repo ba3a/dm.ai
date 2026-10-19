@@ -3,9 +3,9 @@
 Complete reference for all MCP tools available in DMtools.
 
 **Total Integrations**: 24
-**Total Tools**: 379
+**Total Tools**: 381
 
-*Auto-generated from `dmtools list` on: 2026-09-19 11:47:09*
+*Auto-generated from `dmtools list` on: 2026-10-19 14:42:05*
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ dmtools <tool_name> [arguments]
 | **FIGMA** | 22 | [figma-tools.md](figma-tools.md) |
 | **FILE** | 5 | [file-tools.md](file-tools.md) |
 | **GEMINI** | 2 | [gemini-tools.md](gemini-tools.md) |
-| **GITHUB** | 77 | [github-tools.md](github-tools.md) |
+| **GITHUB** | 79 | [github-tools.md](github-tools.md) |
 | **GITLAB** | 34 | [gitlab-tools.md](gitlab-tools.md) |
 | **JENKINS** | 7 | [jenkins-tools.md](jenkins-tools.md) |
 | **JIRA** | 69 | [jira-tools.md](jira-tools.md) |

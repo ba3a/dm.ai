@@ -1,6 +1,6 @@
 # GITHUB MCP Tools
 
-**Total Tools**: 77
+**Total Tools**: 79
 
 ## Quick Reference
 
@@ -30,6 +30,7 @@ const result = github_list_prs_filtered(...);
 | `github_add_labels` | Add labels to a GitHub issue | `owner` (string, optional)<br>`repo` (string, optional)<br>`number` (number, optional)<br>`labels` (array, **required**)<br>`key` (string, optional) |
 | `github_add_pr_comment` | Add a comment to a GitHub pull request discussion. | `workspace` (string, **required**)<br>`repository` (string, **required**)<br>`pullRequestId` (string, **required**)<br>`text` (string, **required**) |
 | `github_add_pr_label` | Add a label to a GitHub pull request. | `workspace` (string, **required**)<br>`repository` (string, **required**)<br>`pullRequestId` (string, **required**)<br>`label` (string, **required**) |
+| `github_add_sub_issue` | Attach an existing GitHub issue as a sub-issue of a parent issue. Pass the child's REST id (subIssueId) or its key/number (subIssueKey), which is resolved to the id. | `owner` (string, optional)<br>`repo` (string, optional)<br>`number` (number, optional)<br>`subIssueId` (number, optional)<br>`key` (string, optional)<br>`subIssueKey` (string, optional) |
 | `github_assign_issue` | Assign a GitHub issue to a user | `user` (string, **required**)<br>`owner` (string, optional)<br>`repo` (string, optional)<br>`number` (number, optional)<br>`key` (string, optional) |
 | `github_close_issue` | Close a GitHub issue | `owner` (string, optional)<br>`repo` (string, optional)<br>`number` (number, optional)<br>`key` (string, optional) |
 | `github_close_pr` | Close a GitHub pull request | `owner` (string, **required**)<br>`repo` (string, **required**)<br>`number` (number, **required**) |
@@ -80,6 +81,7 @@ const result = github_list_prs_filtered(...);
 | `github_list_prs_filtered` | List pull requests in a GitHub repository filtered by a regex pattern on the PR title. Fetches all PRs matching the given state and returns only those whose title matches the regex. Useful for large repos to narrow down results without loading entire history. | `workspace` (string, **required**)<br>`repository` (string, **required**)<br>`state` (string, **required**)<br>`titleRegex` (string, **required**) |
 | `github_list_release_assets` | List all assets attached to a GitHub release. Returns a JSON array of asset objects including id, name, size, and browser_download_url. | `workspace` (string, **required**)<br>`repository` (string, **required**)<br>`releaseId` (string, **required**) |
 | `github_list_releases` | List GitHub releases for a repository | `owner` (string, **required**)<br>`repo` (string, **required**) |
+| `github_list_sub_issues` | List all sub-issues of a GitHub issue (all pages), returned as a JSON array of issues in the parent's order. | `owner` (string, optional)<br>`repo` (string, optional)<br>`number` (number, optional)<br>`key` (string, optional) |
 | `github_list_workflow_runs` | List GitHub Actions workflow runs for a repository, optionally filtered by status or specific workflow file. Use status='failure' to get all failed runs. | `workspace` (string, **required**)<br>`repository` (string, **required**)<br>`status` (string, optional)<br>`workflowId` (string, optional)<br>`perPage` (number, optional)<br>`page` (number, optional)<br>`created` (string, optional) |
 | `github_merge_pr` | Merge a GitHub pull request. Supports merge, squash, and rebase merge methods. | `workspace` (string, **required**)<br>`repository` (string, **required**)<br>`pullRequestId` (string, **required**)<br>`mergeMethod` (string, optional)<br>`commitTitle` (string, optional)<br>`commitMessage` (string, optional) |
 | `github_move_issue_to_status` | Move a GitHub issue to a status. 'done'/'closed' close the issue, 'open'/'reopened' reopen it; any other status is applied as an issue label. | `statusName` (string, **required**)<br>`owner` (string, optional)<br>`repo` (string, optional)<br>`number` (number, optional)<br>`key` (string, optional) |
@@ -295,6 +297,48 @@ dmtools github_add_pr_label "value" "value"
 ```javascript
 // In JavaScript agent
 const result = github_add_pr_label("workspace", "repository");
+```
+
+---
+
+### `github_add_sub_issue`
+
+Attach an existing GitHub issue as a sub-issue of a parent issue. Pass the child's REST id (subIssueId) or its key/number (subIssueKey), which is resolved to the id.
+
+**Parameters:**
+
+- **`owner`** (string) ⚪ Optional
+  - The parent repository owner (user or organization)
+  - Example: `IstiN`
+
+- **`repo`** (string) ⚪ Optional
+  - The parent repository name
+  - Example: `dmtools`
+
+- **`number`** (number) ⚪ Optional
+  - The parent issue number
+  - Example: `42`
+
+- **`subIssueId`** (number) ⚪ Optional
+  - The REST id (not the number) of the issue to attach as a sub-issue
+  - Example: `1234567890`
+
+- **`key`** (string) ⚪ Optional
+  - Composite parent issue key 'owner/repo#123' (alternative to owner/repo/number)
+  - Example: `IstiN/dmtools#42`
+
+- **`subIssueKey`** (string) ⚪ Optional
+  - Child issue key 'owner/repo#123' or a bare number in the parent's repository (alternative to subIssueId)
+  - Example: `IstiN/dmtools#43`
+
+**Example:**
+```bash
+dmtools github_add_sub_issue "value" "value"
+```
+
+```javascript
+// In JavaScript agent
+const result = github_add_sub_issue("owner", "repo");
 ```
 
 ---
@@ -1911,6 +1955,40 @@ dmtools github_list_releases "value" "value"
 ```javascript
 // In JavaScript agent
 const result = github_list_releases("owner", "repo");
+```
+
+---
+
+### `github_list_sub_issues`
+
+List all sub-issues of a GitHub issue (all pages), returned as a JSON array of issues in the parent's order.
+
+**Parameters:**
+
+- **`owner`** (string) ⚪ Optional
+  - The parent repository owner (user or organization)
+  - Example: `IstiN`
+
+- **`repo`** (string) ⚪ Optional
+  - The parent repository name
+  - Example: `dmtools`
+
+- **`number`** (number) ⚪ Optional
+  - The parent issue number
+  - Example: `42`
+
+- **`key`** (string) ⚪ Optional
+  - Composite parent issue key 'owner/repo#123' (alternative to owner/repo/number)
+  - Example: `IstiN/dmtools#42`
+
+**Example:**
+```bash
+dmtools github_list_sub_issues "value" "value"
+```
+
+```javascript
+// In JavaScript agent
+const result = github_list_sub_issues("owner", "repo");
 ```
 
 ---
