@@ -140,7 +140,7 @@ public class CliExecutionHelper {
      * ({@code owner/repo#12}) becomes the router key {@code gh-12}, which resolves against the
      * configured repository, instead of a flattened {@code owner-repo-12} that no key shape matches.
      */
-    static String toInputFolderName(String ticketKey) {
+    public static String toInputFolderName(String ticketKey) {
         Matcher github = GITHUB_COMPOSITE_KEY.matcher(ticketKey);
         if (github.matches()) {
             return "gh-" + github.group(1);

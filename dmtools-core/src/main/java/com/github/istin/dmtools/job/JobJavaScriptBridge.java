@@ -850,7 +850,7 @@ public class JobJavaScriptBridge {
 
         // Create a JavaScript function that calls the generated MCP executor
         String jsFunction = String.format("""
-            function %s() {
+            globalThis.%s = function %s() {
                 // Handle both object parameter and individual arguments
                 var args = {};
                 
@@ -867,8 +867,8 @@ public class JobJavaScriptBridge {
                 }
                 %s
                 return executeToolViaJava('%s', args);
-            }
-            """, toolName, parameterMappingLogic.toString(), toolName, toolCallLogStatement, toolName);
+            };
+            """, toolName, toolName, parameterMappingLogic.toString(), toolName, toolCallLogStatement, toolName);
             
         try {
             jsContext.eval("js", jsFunction);

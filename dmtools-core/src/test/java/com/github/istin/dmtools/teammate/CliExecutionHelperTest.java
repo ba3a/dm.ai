@@ -1538,21 +1538,22 @@ public class CliExecutionHelperTest {
     }
 
     @Test
-    void testToInputFolderName_GitHubCompositeKeyBecomesRouterKey() {
-        assertEquals("gh-12", CliExecutionHelper.toInputFolderName("acme/widgets#12"));
-        assertEquals("gh-7", CliExecutionHelper.toInputFolderName("epam/dm.ai#7"));
-        assertEquals("gh-2", CliExecutionHelper.toInputFolderName("ba3a/dm.ai#2"));
-    }
-
-    @Test
-    void testToInputFolderName_OtherUnsafeKeysAreStillFlattened() {
-        assertEquals("a-b-c", CliExecutionHelper.toInputFolderName("a/b#c"));
-    }
-
-    @Test
-    void testToInputFolderName_JiraAndAdoKeysUnchanged() {
+    void testToInputFolderName_MapsGitHubCompositeKeyAndSanitizesOthers() {
+        assertEquals("gh-42", CliExecutionHelper.toInputFolderName("acme/widgets#42"));
+        assertEquals("gh-7", CliExecutionHelper.toInputFolderName("org.name-1/repo_2#7"));
         assertEquals("PROJ-123", CliExecutionHelper.toInputFolderName("PROJ-123"));
-        assertEquals("4567", CliExecutionHelper.toInputFolderName("4567"));
-        assertEquals("gh-9", CliExecutionHelper.toInputFolderName("gh-9"));
+        assertEquals("standalone", CliExecutionHelper.toInputFolderName("standalone"));
+        assertEquals("foo-bar-baz", CliExecutionHelper.toInputFolderName("foo/bar:baz"));
+    }
+
+    @Test
+    void testCreateInputContext_GitHubCompositeKeyUsesGhFolder() throws IOException {
+        when(mockTicket.getTicketKey()).thenReturn("acme/widgets#42");
+        when(mockTicket.getAttachments()).thenReturn(Collections.emptyList());
+
+        Path created = cliHelper.createInputContext(mockTicket, "Issue body", mockTrackerClient, tempDir);
+
+        assertEquals(tempDir.resolve("input").resolve("gh-42"), created);
+        assertTrue(Files.exists(created.resolve("request.md")));
     }
 }
