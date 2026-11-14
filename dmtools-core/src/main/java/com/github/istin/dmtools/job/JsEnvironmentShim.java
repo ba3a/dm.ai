@@ -7,6 +7,7 @@ import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyExecutable;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -24,7 +25,9 @@ import java.util.function.Function;
 final class JsEnvironmentShim {
 
     /** Configuration names a script may read. Never add a credential here. */
-    static final Set<String> READABLE_NAMES = Set.of("DEFAULT_TRACKER", "ADO_PROJECT", "JIRA_BASE_PATH");
+    static final Set<String> READABLE_NAMES = Set.of(
+            "DEFAULT_TRACKER", "ADO_PROJECT", "JIRA_BASE_PATH",
+            "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "CHECKOUT_REF");
 
     private JsEnvironmentShim() {
     }
@@ -45,8 +48,14 @@ final class JsEnvironmentShim {
             }
             return lookup.apply(name.asString());
         };
-        ProxyObject system = ProxyObject.fromMap(Map.of("getenv", getenv));
-        ProxyObject lang = ProxyObject.fromMap(Map.of("System", system));
-        return ProxyObject.fromMap(Map.of("lang", lang));
+        ProxyObject system = ProxyObject.fromMap(new HashMap<>(Map.of("getenv", getenv)));
+        ProxyObject lang = ProxyObject.fromMap(new HashMap<>(Map.of("System", system)));
+        return ProxyObject.fromMap(new HashMap<>(Map.of("lang", lang, SHIM_MARKER, true)));
+    }
+
+    static final String SHIM_MARKER = "__dmtoolsEnvShim";
+
+    static boolean isShim(Value value) {
+        return value != null && value.hasMember(SHIM_MARKER);
     }
 }
