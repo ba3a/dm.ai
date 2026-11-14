@@ -599,6 +599,7 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
             CliExecutionHelper cliHelper = new CliExecutionHelper();
             CliExecutionHelper.CliExecutionResult cliResult = null;
             Path inputContextPath = null;
+            AtomicReference<String> inputFolderPathRef = new AtomicReference<>(null);
 
             // Build timer JS action runnable if configured. Declared here (outer scope) so the
             // SAME timer also wraps postJSAction below — a postJSAction can itself run a long
@@ -621,6 +622,7 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
                             .with(TrackerParams.INITIATOR, initiator)
                             .with(TrackerParams.METADATA, expertParams.getMetadata())
                             .with("systemRequest", systemRequestCommentAlias)
+                            .with("inputFolderPath", inputFolderPathRef.get())
                             .with("currentCliOutput", liveCliOutput.get())
                             .with("currentCliHasFatalError", errorState.hasFatalError())
                             .with("currentCliErrorMessage", errorState.getErrorMessage())
@@ -634,15 +636,6 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
 
             if (cliCommands != null && cliCommands.length > 0) {
                 try {
-                    // Build final CLI commands with aggregated prompt (shared logic with CliAgent)
-                    CliCommandBuilder cliCommandBuilder = new CliCommandBuilder(instructionProcessor, configuration);
-                    String[] finalCliCommands = cliCommandBuilder.buildCommands(
-                            cliCommands,
-                            expertParams.getCliPrompt(),
-                            expertParams.getCliPrompts(),
-                            expertParams.getCliPromptsByTracker(),
-                            expertParams.getCustomParams());
-
                     // Create input context for CLI commands via shared builder
                     TicketInputContextBuilder contextBuilder = new TicketInputContextBuilder(instructionProcessor);
                     TicketInputContextBuilder.Result contextResult = contextBuilder.build(
@@ -650,6 +643,7 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
                             trackerClient, confluence, null,
                             expertParams.isWriteAgentParamsToFiles() ? originalParams : inputParams);
                     inputContextPath = contextResult.getPath();
+                    inputFolderPathRef.set(inputContextPath != null ? inputContextPath.toAbsolutePath().toString() : null);
 
                     // Run preCliJSAction to allow extending input folder with extra content before CLI execution.
                     // If it throws, or reports failure (returns false / {success:false, ...}), treat this as a
@@ -700,6 +694,19 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
                     } else if (expertParams.isSkipPreCliJSAction()) {
                         logger.info("Skipping preCliJSAction (skipPreCliJSAction=true) for {}", ticket.getKey());
                     }
+
+                    // Build final CLI commands with aggregated prompt AFTER input context & preCliJSAction
+                    // so conditional cliPrompts sections can inspect the prepared branch/input folder.
+                    String inputFolderStr = inputContextPath != null ? inputContextPath.toAbsolutePath().toString() : null;
+                    CliCommandBuilder cliCommandBuilder = new CliCommandBuilder(instructionProcessor, configuration);
+                    String[] finalCliCommands = cliCommandBuilder.buildCommands(
+                            cliCommands,
+                            expertParams.getCliPrompt(),
+                            expertParams.getCliPromptsConfig(),
+                            expertParams.getCliPromptsByTracker(),
+                            expertParams.getCustomParams(),
+                            conditionScript -> evaluateCliPromptCondition(
+                                    conditionScript, expertParams, ticket, initiator, inputFolderStr));
 
                     // Execute CLI commands from project root directory (where cursor-agent can find workspace config)
                     Path projectRoot = Paths.get(System.getProperty("user.dir"));
@@ -865,6 +872,7 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
                             .with(TrackerParams.INITIATOR, initiator)
                             .with(TrackerParams.METADATA, expertParams.getMetadata())
                             .with("systemRequest", systemRequestCommentAlias)
+                            .with("inputFolderPath", inputFolderPathRef.get())
                             .with("currentCliHasFatalError", cliHasFatalError)
                             .with("currentCliErrorMessage", cliErrorMessage)
                             .execute();
@@ -985,15 +993,6 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
         List<ResultItem> results = new ArrayList<>();
         String[] cliCommands = expertParams.getCliCommands();
 
-        // Build final CLI commands with aggregated prompt
-        CliCommandBuilder cliCommandBuilder = new CliCommandBuilder(instructionProcessor, configuration);
-        String[] finalCliCommands = cliCommandBuilder.buildCommands(
-                cliCommands,
-                expertParams.getCliPrompt(),
-                expertParams.getCliPrompts(),
-                expertParams.getCliPromptsByTracker(),
-                expertParams.getCustomParams());
-
         Path inputContextPath = null;
         CliExecutionHelper cliHelper = new CliExecutionHelper();
         CliExecutionHelper.CliExecutionResult cliResult = null;
@@ -1005,6 +1004,18 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
                     trackerClient, confluence, null,
                     expertParams.isWriteAgentParamsToFiles() ? originalParams : inputParams);
             inputContextPath = contextResult.getPath();
+
+            // Build final CLI commands with aggregated prompt after input context is created
+            String inputFolderStr = inputContextPath != null ? inputContextPath.toAbsolutePath().toString() : null;
+            CliCommandBuilder cliCommandBuilder = new CliCommandBuilder(instructionProcessor, configuration);
+            String[] finalCliCommands = cliCommandBuilder.buildCommands(
+                    cliCommands,
+                    expertParams.getCliPrompt(),
+                    expertParams.getCliPromptsConfig(),
+                    expertParams.getCliPromptsByTracker(),
+                    expertParams.getCustomParams(),
+                    conditionScript -> evaluateCliPromptCondition(
+                            conditionScript, expertParams, null, initiator, inputFolderStr));
 
             // Execute CLI commands from project root directory
             Path projectRoot = Paths.get(System.getProperty("user.dir"));
@@ -1249,6 +1260,33 @@ public class Teammate extends AbstractJob<Teammate.TeammateParams, List<ResultIt
             }
         }
         return scanText.toString();
+    }
+
+    /**
+     * Evaluates a {@code cliPrompts} section condition script via JavaScriptExecutor.
+     */
+    private boolean evaluateCliPromptCondition(String conditionScript, TeammateParams expertParams,
+                                                ITicket ticket, String initiator, String inputFolderPath) {
+        try {
+            JavaScriptExecutor executor = js(conditionScript)
+                    .mcp(trackerClient, ai, confluence, null)
+                    .withJobContext(expertParams, ticket, null)
+                    .with(TrackerParams.INITIATOR, initiator)
+                    .with(TrackerParams.METADATA, expertParams.getMetadata());
+            if (inputFolderPath != null) {
+                executor.with("inputFolderPath", inputFolderPath);
+            }
+            if (expertParams.getCustomParams() != null && !expertParams.getCustomParams().isEmpty()) {
+                executor.with("customParams", expertParams.getCustomParams());
+            }
+            Object result = executor.execute();
+            boolean included = CliPromptsConfig.isConditionMet(result);
+            logger.info("Evaluated cliPrompts condition '{}' -> {}", conditionScript, included);
+            return included;
+        } catch (Exception e) {
+            logger.warn("cliPrompts condition '{}' failed (excluding section): {}", conditionScript, e.getMessage());
+            return false;
+        }
     }
 
 }

@@ -568,6 +568,26 @@ class AgentPackResolverTest {
         assertEquals("literal role", params.getJSONArray("cliPrompts").getString(1));
     }
 
+    @Test
+    void rewritePaths_structuredCliPromptSectionPromptAndCondition() throws IOException {
+        publishPack(AGENT, VERSION, buildPack(Map.of(
+                "demo.json", "{}",
+                "js/conditions/cond.js", "function action() { return true; }\n",
+                "prompts/cg.md", "# cg\n"), AGENT, VERSION, "demo.json"));
+        ResolvedPack pack = resolver().resolve("demo@latest", null);
+
+        JSONObject config = new JSONObject("{\"params\":{" +
+                "\"cliPrompts\": [{\"id\": \"codegraph\", \"prompt\": \"./agents/prompts/cg.md\", \"condition\": \"agents/js/conditions/cond.js\"}]" +
+                "}}");
+        resolver().rewritePathsToPackRoot(config, pack.getPackRoot());
+
+        JSONObject section = config.getJSONObject("params").getJSONArray("cliPrompts").getJSONObject(0);
+        assertEquals(pack.getPackRoot().resolve("prompts/cg.md").toAbsolutePath().normalize().toString(),
+                section.getString("prompt"));
+        assertEquals(pack.getPackRoot().resolve("js/conditions/cond.js").toAbsolutePath().normalize().toString(),
+                section.getString("condition"));
+    }
+
     // ------------------------------------------------------------------
     // Raw-zip helpers
     // ------------------------------------------------------------------
@@ -623,5 +643,28 @@ class AgentPackResolverTest {
             }
         }
         return copy;
+    }
+
+    @Test
+    void pinnedVersion404_fallsBackToEarlierReleaseViaGitHubReleasesApi() throws IOException {
+        byte[] zip = buildPack(
+                Map.of("demo.json", "{\"name\":\"DemoJob\",\"params\":{}}"),
+                "demo", "0.1.271", "demo.json");
+        String asset = "demo-0.1.271.zip";
+        String oldTagPath = "/IstiN/dmtools-agents/releases/download/agents-rel-20261102-161644/" + asset;
+        servedFiles.put(oldTagPath, zip);
+        servedFiles.put(oldTagPath + ".sha256",
+                (AgentPackResolver.sha256Hex(zip) + "  " + asset + "\n").getBytes(StandardCharsets.UTF_8));
+        String releasesJson = "[{\"tag_name\":\"agents-rel-20261102-161644\",\"assets\":[{\"name\":\"" + asset
+                + "\",\"browser_download_url\":\"" + registryUrl + oldTagPath + "\"}]}]";
+        servedFiles.put("/repos/IstiN/dmtools-agents/releases", releasesJson.getBytes(StandardCharsets.UTF_8));
+
+        AgentPackResolver r = new AgentPackResolver(
+                packsRoot,
+                registryUrl + "/IstiN/dmtools-agents/releases/download/agents-rel-20261102-181429");
+        ResolvedPack resolved = r.resolve("demo@0.1.271", null);
+        assertEquals("demo", resolved.getAgent());
+        assertEquals("0.1.271", resolved.getVersion());
+        assertTrue(Files.exists(resolved.getEntryFile()));
     }
 }

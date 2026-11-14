@@ -53,6 +53,7 @@ public final class HtmlToMarkdownConverter {
     // Strikethrough markers survive CopyDown as plain text and become ~~ in restore() (dm.ai#676).
     private static final String STRIKE_OPEN = "DMSTRIKEOPEN";
     private static final String STRIKE_CLOSE = "DMSTRIKECLOSE";
+    private static final String BR_PLACEHOLDER = "DMBRIDX";
 
     private HtmlToMarkdownConverter() {}
 
@@ -206,14 +207,65 @@ public final class HtmlToMarkdownConverter {
             Document doc = parseFragment(htmlWithoutExtracted);
             Elements tableElements = doc.getElementsByTag("table");
             int index = 0;
-            for (Element table : tableElements) {
-                String markdownTable = convertTableToMarkdown(table);
-                tables.add(markdownTable);
-                Element placeholder = doc.createElement("p").text(TABLE_PLACEHOLDER_PREFIX + index);
-                table.replaceWith(placeholder);
-                index++;
+            // Convert innermost tables first so nested tables inside <td>/<th> cells
+            // are rendered into compact inline rows before their enclosing outer table
+            // iterates over its own direct <tr> rows.
+            for (int i = tableElements.size() - 1; i >= 0; i--) {
+                Element table = tableElements.get(i);
+                boolean isNestedInTable = table.parent() != null && table.parent().closest("table") != null;
+                if (isNestedInTable) {
+                    String inlineNested = convertNestedTableToInlineHtml(table);
+                    Element span = doc.createElement("span");
+                    span.html(inlineNested);
+                    table.replaceWith(span);
+                } else {
+                    String markdownTable = convertTableToMarkdown(table);
+                    tables.add(markdownTable);
+                    Element placeholder = doc.createElement("p").text(TABLE_PLACEHOLDER_PREFIX + index);
+                    table.replaceWith(placeholder);
+                    index++;
+                }
             }
             htmlWithoutExtracted = bodyHtml(doc);
+        }
+
+        private static List<Element> directTableRows(Element table) {
+            List<Element> trs = new ArrayList<>();
+            for (Element child : table.children()) {
+                String tag = child.tagName();
+                if ("tr".equalsIgnoreCase(tag)) {
+                    trs.add(child);
+                } else if ("thead".equalsIgnoreCase(tag)
+                        || "tbody".equalsIgnoreCase(tag)
+                        || "tfoot".equalsIgnoreCase(tag)) {
+                    for (Element row : child.children()) {
+                        if ("tr".equalsIgnoreCase(row.tagName())) {
+                            trs.add(row);
+                        }
+                    }
+                }
+            }
+            return trs;
+        }
+
+        private static String convertNestedTableToInlineHtml(Element table) {
+            List<String> renderedRows = new ArrayList<>();
+            for (Element tr : directTableRows(table)) {
+                List<String> cells = new ArrayList<>();
+                for (Element child : tr.children()) {
+                    String tag = child.tagName();
+                    if ("th".equalsIgnoreCase(tag) || "td".equalsIgnoreCase(tag)) {
+                        String cellText = cellToMarkdown(child);
+                        if (!cellText.isEmpty()) {
+                            cells.add(cellText);
+                        }
+                    }
+                }
+                if (!cells.isEmpty()) {
+                    renderedRows.add(String.join(": ", cells));
+                }
+            }
+            return String.join("<br/>", renderedRows);
         }
 
         private static String convertTableToMarkdown(Element table) {
@@ -221,7 +273,7 @@ public final class HtmlToMarkdownConverter {
             int maxColumns = 0;
             boolean hasHeader = false;
 
-            for (Element tr : table.getElementsByTag("tr")) {
+            for (Element tr : directTableRows(table)) {
                 List<String> cells = new ArrayList<>();
                 for (Element child : tr.children()) {
                     String tag = child.tagName();
@@ -253,9 +305,11 @@ public final class HtmlToMarkdownConverter {
         }
 
         private static String cellToMarkdown(Element cell) {
-            String cellMarkdown = new CopyDown().convert(cell.html()).trim();
+            String cellHtml = cell.html().replaceAll("(?i)<br\\s*/?>", " " + BR_PLACEHOLDER + " ");
+            String cellMarkdown = new CopyDown().convert(cellHtml).trim();
             cellMarkdown = cellMarkdown.replace("|", "\\|");
             cellMarkdown = cellMarkdown.replaceAll("\\s+", " ").trim();
+            cellMarkdown = cellMarkdown.replaceAll("\\s*" + BR_PLACEHOLDER + "\\s*", "<br/>");
             return cellMarkdown;
         }
 
@@ -283,7 +337,14 @@ public final class HtmlToMarkdownConverter {
             if (strikes.isEmpty()) {
                 return;
             }
+            List<Element> nested = strikes.stream()
+                    .filter(e -> e.parents().stream().anyMatch(p -> p.is("s, del, strike, [style~=line-through], code")))
+                    .toList();
             for (Element strike : strikes) {
+                if (nested.contains(strike)) {
+                    strike.unwrap(); // nested strike or inline code: no extra markers
+                    continue;
+                }
                 strike.prepend(STRIKE_OPEN);
                 strike.append(STRIKE_CLOSE);
                 strike.unwrap();
@@ -291,8 +352,23 @@ public final class HtmlToMarkdownConverter {
             htmlWithoutExtracted = bodyHtml(doc);
         }
 
+        /**
+         * Merges touching struck runs, drops empty ones and moves edge whitespace outside the
+         * markers (Markdown strikethrough cannot start or end with whitespace).
+         */
+        static String normalizeStrikeMarkers(String markdown) {
+            if (!markdown.contains(STRIKE_OPEN)) {
+                return markdown;
+            }
+            String result = markdown.replaceAll(STRIKE_OPEN + "(\\s*)" + STRIKE_CLOSE, "$1")
+                    .replaceAll(STRIKE_OPEN + "(\\s+)", "$1" + STRIKE_OPEN)
+                    .replaceAll("(\\s+)" + STRIKE_CLOSE, STRIKE_CLOSE + "$1")
+                    .replace(STRIKE_CLOSE + STRIKE_OPEN, "");
+            return result.replace(STRIKE_OPEN, "~~").replace(STRIKE_CLOSE, "~~");
+        }
+
         String restore(String markdown) {
-            String result = markdown.replace(STRIKE_OPEN, "~~").replace(STRIKE_CLOSE, "~~");
+            String result = normalizeStrikeMarkers(markdown);
             // Tables first: their cells may still contain code/task placeholders.
             // Descending order keeps "PREFIX1" from matching inside "PREFIX10".
             for (int i = tables.size() - 1; i >= 0; i--) {

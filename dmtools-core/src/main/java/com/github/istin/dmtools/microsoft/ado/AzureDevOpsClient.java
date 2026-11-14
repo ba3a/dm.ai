@@ -21,9 +21,11 @@ import com.github.istin.dmtools.microsoft.ado.model.AdoUser;
 import com.github.istin.dmtools.common.model.IUser;
 import com.github.istin.dmtools.networking.AbstractRestClient;
 import okhttp3.HttpUrl;
+import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.MediaType;
+import okhttp3.Response;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.json.JSONArray;
@@ -403,6 +405,7 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
     public List<? extends IComment> getComments(
             @MCPParam(name = "id", description = "The work item ID", required = true, aliases = {"key"})
             String workItemId,
+            @MCPParam(name = "ticket", description = "Optional ticket object (unused, kept for TrackerClient interface compatibility)", required = false)
             ITicket ticket
     ) throws IOException {
         String path = String.format("/%s/_apis/wit/workItems/%s/comments", project, workItemId);
@@ -541,7 +544,8 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
     }
 
     private static JSONObject fieldOp(String field, Object value) {
-        return new JSONObject().put("op", "add").put("path", "/fields/" + field).put("value", value);
+        String opType = "System.Tags".equalsIgnoreCase(field) ? "replace" : "add";
+        return new JSONObject().put("op", opType).put("path", "/fields/" + field).put("value", value);
     }
 
     /** JSON Patch op that marks a large text field as Markdown (Azure DevOps multilineFieldsFormat). */
@@ -561,9 +565,10 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
             @MCPParam(name = "tags", description = "Tags as semicolon-separated string (e.g., 'tag1;tag2;tag3')", required = true)
             String tags
     ) throws IOException {
-        return updateWorkItem(workItemId, fields -> {
-            fields.set("System.Tags", tags);
-        });
+        JSONArray ops = new JSONArray().put(fieldOp("System.Tags", tags == null ? "" : tags));
+        String response = patchWorkItem(workItemId, ops);
+        verifyTagsUpdated(workItemId, response, tags);
+        return response;
     }
 
     @MCPTool(
@@ -708,11 +713,7 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
         // Build JSON Patch operations
         JSONArray patchOps = new JSONArray();
         for (Map.Entry<String, Object> entry : updates.entrySet()) {
-            JSONObject op = new JSONObject();
-            op.put("op", "add"); // or "replace"
-            op.put("path", "/fields/" + entry.getKey());
-            op.put("value", entry.getValue());
-            patchOps.put(op);
+            patchOps.put(fieldOp(entry.getKey(), entry.getValue()));
         }
 
         String path = String.format("/%s/_apis/wit/workitems/%s", project, workItemId);
@@ -761,6 +762,28 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
         return updateWorkItem(workItemId, fields -> {
             fields.set("System.State", stateName);
         });
+    }
+
+    @MCPTool(
+            name = "ado_get_work_item_type_states",
+            description = "List the valid states for a work item type in the project (e.g., New, Active, Resolved, Closed)",
+            integration = "ado",
+            category = "work_item_management"
+    )
+    public String getWorkItemTypeStates(
+            @MCPParam(name = "workItemType", description = "The work item type (e.g. User Story, Bug, Task)", required = true, example = "User Story", aliases = {"issueType", "type"})
+            String workItemType,
+            @MCPParam(name = "project", description = "The project name (defaults to the configured project)", required = false)
+            String projectName
+    ) throws IOException {
+        if (workItemType == null || workItemType.trim().isEmpty()) {
+            throw new IllegalArgumentException("workItemType must not be empty");
+        }
+        String targetProject = (projectName != null && !projectName.trim().isEmpty()) ? projectName.trim() : project;
+        String encodedType = workItemType.trim().replace(" ", "%20");
+        String path = String.format("/%s/_apis/wit/workitemtypes/%s/states", targetProject, encodedType);
+        GenericRequest request = new GenericRequest(this, path(path)).param("api-version", API_VERSION);
+        return execute(request);
     }
 
     // ========== Label/Tag Operations ==========
@@ -834,6 +857,9 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
 
     @Override
     public void deleteLabelInTicket(WorkItem ticket, String label) throws IOException {
+        if (ticket == null || label == null || label.trim().isEmpty()) {
+            return;
+        }
         JSONArray labels = ticket.getTicketLabels();
         if (labels == null) {
             return;
@@ -841,18 +867,97 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
 
         StringBuilder tagsBuilder = new StringBuilder();
         boolean first = true;
+        boolean removed = false;
         for (int i = 0; i < labels.length(); i++) {
             String tag = labels.getString(i);
-            if (!tag.equalsIgnoreCase(label)) {
+            if (!tag.equalsIgnoreCase(label.trim())) {
                 if (!first) tagsBuilder.append(";");
                 tagsBuilder.append(tag);
                 first = false;
+            } else {
+                removed = true;
             }
         }
+        if (!removed) {
+            return;
+        }
 
-        updateWorkItem(ticket.getTicketKey(), fields -> {
-            fields.set("System.Tags", tagsBuilder.toString());
+        String expectedTags = tagsBuilder.toString();
+        String response = updateWorkItem(ticket.getTicketKey(), fields -> {
+            fields.set("System.Tags", expectedTags);
         });
+        verifyTagRemoved(ticket.getTicketKey(), response, label.trim());
+    }
+
+    /**
+     * Verifies that a removed tag is no longer present in the PATCH response (when it includes
+     * {@code fields.System.Tags}); throws {@link IOException} if ADO still reports the tag.
+     */
+    private void verifyTagRemoved(String workItemId, String patchResponse, String removedLabel) throws IOException {
+        Set<String> actual = extractResponseTags(patchResponse);
+        if (actual == null) {
+            return;
+        }
+        for (String tag : actual) {
+            if (tag.equalsIgnoreCase(removedLabel)) {
+                throw new IOException("Failed to remove tag '" + removedLabel + "' from work item "
+                        + workItemId + "; System.Tags still contains: " + actual);
+            }
+        }
+    }
+
+    /**
+     * Verifies that {@code updateTags} persisted the requested tag set when the PATCH response
+     * carries {@code fields}; throws {@link IOException} on mismatch.
+     */
+    private void verifyTagsUpdated(String workItemId, String patchResponse, String requestedTags) throws IOException {
+        Set<String> actual = extractResponseTags(patchResponse);
+        if (actual == null) {
+            return;
+        }
+        Set<String> expected = parseTagSet(requestedTags);
+        if (!actual.equals(expected)) {
+            throw new IOException("Failed to update tags on work item " + workItemId
+                    + ": expected " + expected + " but ADO stored " + actual);
+        }
+    }
+
+    /**
+     * Parses {@code fields.System.Tags} from a work item JSON response. Returns {@code null} when
+     * the response is not a work item payload with a {@code fields} object (e.g. unit-test stubs).
+     */
+    static Set<String> extractResponseTags(String response) {
+        if (response == null || response.trim().isEmpty()) {
+            return null;
+        }
+        String trimmed = response.trim();
+        if (!trimmed.startsWith("{")) {
+            return null;
+        }
+        try {
+            JSONObject json = new JSONObject(trimmed);
+            JSONObject fields = json.optJSONObject("fields");
+            if (fields == null) {
+                return null;
+            }
+            return parseTagSet(fields.optString("System.Tags", ""));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    static Set<String> parseTagSet(String rawTags) {
+        Set<String> result = new LinkedHashSet<>();
+        if (rawTags == null || rawTags.trim().isEmpty()) {
+            return result;
+        }
+        for (String part : rawTags.split("[,;]")) {
+            String t = part.trim();
+            if (!t.isEmpty()) {
+                result.add(t.toLowerCase());
+            }
+        }
+        return result;
     }
 
     // ========== Link/Relationship Operations ==========
@@ -1441,67 +1546,117 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
             @MCPParam(name = "email", description = "User email address", required = true)
             String email
     ) throws IOException {
-        // Use Graph API to search for user by email
-        // Graph API endpoint: https://vssps.dev.azure.com/{organization}/_apis/graph/users?api-version=7.1-preview.1
         String graphUrl = "https://vssps.dev.azure.com/" + organization + "/_apis/graph/users";
-        GenericRequest request = new GenericRequest(this, graphUrl)
-                .param("api-version", "7.1-preview.1");
-        
-        String response = request.execute();
-        JSONObject result = new JSONObject(response);
-        JSONArray users = result.optJSONArray("value");
-        
-        if (users != null) {
-            for (int i = 0; i < users.length(); i++) {
-                JSONObject user = users.getJSONObject(i);
-                String principalName = user.optString("principalName");
-                String mailAddress = user.optString("mailAddress");
-                
-                if (email.equalsIgnoreCase(principalName) || email.equalsIgnoreCase(mailAddress)) {
-                    return new AdoUser(user);
+        String continuationToken = null;
+        Set<String> seenTokens = new HashSet<>();
+        for (int page = 0; page < 100; page++) {
+            GenericRequest request = new GenericRequest(this, graphUrl)
+                    .param("api-version", "7.1-preview.1")
+                    .param("continuationToken", continuationToken);
+            GraphPageResult pageResult = executeGraphPage(request);
+            JSONObject result = new JSONObject(pageResult.body);
+            JSONArray users = result.optJSONArray("value");
+            if (users != null) {
+                for (int i = 0; i < users.length(); i++) {
+                    JSONObject user = users.getJSONObject(i);
+                    if (email.equalsIgnoreCase(user.optString("principalName"))
+                            || email.equalsIgnoreCase(user.optString("mailAddress"))) {
+                        return new AdoUser(user);
+                    }
                 }
             }
+            String nextToken = pageResult.continuationToken;
+            if (nextToken == null || nextToken.isEmpty()) {
+                nextToken = result.optString("continuationToken", null);
+            }
+            if (nextToken == null || nextToken.isEmpty() || !seenTokens.add(nextToken)) {
+                break;
+            }
+            continuationToken = nextToken;
         }
-        
-        // Fallback: try to get user by UPN (User Principal Name) directly
-        // This is more efficient if the email format matches UPN
+
         try {
-            String userDescriptor = getUserDescriptorByEmail(email);
-            if (userDescriptor != null) {
-                String userUrl = "https://vssps.dev.azure.com/" + organization + "/_apis/graph/users/" + userDescriptor;
-                GenericRequest userRequest = new GenericRequest(this, userUrl)
-                        .param("api-version", "7.1-preview.1");
-                String userResponse = userRequest.execute();
-                return new AdoUser(new JSONObject(userResponse));
+            AdoUser fallbackUser = findUserViaIdentities(email);
+            if (fallbackUser != null) {
+                return fallbackUser;
             }
         } catch (Exception e) {
-            logger.warn("Failed to get user descriptor for email: {}", email, e);
+            logger.warn("Failed to resolve user via Identities API for email: {}", email, e);
         }
-        
+
         throw new IOException("User not found with email: " + email);
     }
-    
-    /**
-     * Get user descriptor (a unique identifier) by email.
-     * This is used for more specific user lookups.
-     */
-    private String getUserDescriptorByEmail(String email) throws IOException {
-        // Use Identities API to find user by email
+
+    protected static class GraphPageResult {
+        final String body;
+        final String continuationToken;
+
+        GraphPageResult(String body, String continuationToken) {
+            this.body = body;
+            this.continuationToken = continuationToken;
+        }
+    }
+
+    protected GraphPageResult executeGraphPage(GenericRequest request) throws IOException {
+        if (getClass() != BasicAzureDevOpsClient.class && getClient() == super.getClient()) {
+            return new GraphPageResult(request.execute(), null);
+        }
+        Request.Builder requestBuilder = sign(new Request.Builder())
+                .url(request.url())
+                .header("User-Agent", "DMTools");
+        for (Map.Entry<String, String> header : request.getHeaders().entrySet()) {
+            requestBuilder.header(header.getKey(), header.getValue());
+        }
+        Request httpRequest = requestBuilder.get().build();
+        try (okhttp3.Response response = getClient().newCall(httpRequest).execute()) {
+            if (response.isSuccessful()) {
+                String body = response.body() != null ? response.body().string() : "{}";
+                String token = response.header("X-MS-ContinuationToken");
+                return new GraphPageResult(body, token);
+            }
+            throw printAndCreateException(httpRequest, response);
+        }
+    }
+
+    private AdoUser findUserViaIdentities(String email) throws IOException {
         String identitiesUrl = "https://vssps.dev.azure.com/" + organization + "/_apis/identities";
         GenericRequest request = new GenericRequest(this, identitiesUrl)
                 .param("searchFilter", "MailAddress")
                 .param("filterValue", email)
                 .param("api-version", "7.1-preview.1");
-        
+
         String response = request.execute();
         JSONObject result = new JSONObject(response);
         JSONArray identities = result.optJSONArray("value");
-        
-        if (identities != null && identities.length() > 0) {
-            JSONObject identity = identities.getJSONObject(0);
-            return identity.optString("descriptor");
+        if (identities == null || identities.length() == 0) {
+            return null;
         }
-        
+        JSONObject identity = identities.getJSONObject(0);
+        String id = identity.optString("id", null);
+        String displayName = identity.optString("customDisplayName", null);
+        if (displayName == null || displayName.isEmpty()) {
+            displayName = identity.optString("providerDisplayName", null);
+        }
+        if (displayName == null || displayName.isEmpty()) {
+            displayName = identity.optString("displayName", null);
+        }
+        if ((id != null && !id.isEmpty()) || (displayName != null && !displayName.isEmpty())) {
+            JSONObject normalized = new JSONObject(identity.toString());
+            if (displayName != null && !displayName.isEmpty()) {
+                normalized.put("displayName", displayName);
+            }
+            if (!normalized.has("mailAddress") && !normalized.has("emailAddress")) {
+                normalized.put("mailAddress", email);
+            }
+            return new AdoUser(normalized);
+        }
+        String descriptor = identity.optString("descriptor", null);
+        if (descriptor != null && !descriptor.isEmpty() && !descriptor.contains(";")) {
+            String userUrl = "https://vssps.dev.azure.com/" + organization + "/_apis/graph/users/" + descriptor;
+            GenericRequest userRequest = new GenericRequest(this, userUrl)
+                    .param("api-version", "7.1-preview.1");
+            return new AdoUser(new JSONObject(userRequest.execute()));
+        }
         return null;
     }
 
@@ -1651,6 +1806,65 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
                 .param("searchCriteria.status", status)
                 .param("api-version", API_VERSION);
         return execute(request);
+    }
+
+    @MCPTool(
+            name = "ado_create_pr",
+            description = "Create a pull request in an Azure DevOps Git repository.",
+            integration = "ado",
+            category = "pull_requests",
+            aliases = {"source_code_create_pr"}
+    )
+    public String createPullRequest(
+            @MCPParam(name = "repository", description = "The Git repository name", required = true, example = "ai-native-sdlc-blueprint")
+            String repository,
+            @MCPParam(name = "sourceRefName", description = "The full source branch ref", required = true, example = "refs/heads/feature/saved-cards")
+            String sourceRefName,
+            @MCPParam(name = "targetRefName", description = "The full target branch ref", required = true, example = "refs/heads/main")
+            String targetRefName,
+            @MCPParam(name = "title", description = "The pull request title", required = true, example = "Add saved cards")
+            String title,
+            @MCPParam(name = "description", description = "The pull request description (Markdown supported)", required = false)
+            String description
+    ) throws IOException {
+        GenericRequest request =
+                new GenericRequest(this, path(gitPrPath(repository, "")))
+                        .param("api-version", API_VERSION);
+        JSONObject body =
+                new JSONObject()
+                        .put("sourceRefName", normalizeBranchRef(sourceRefName))
+                        .put("targetRefName", normalizeBranchRef(targetRefName))
+                        .put("title", title);
+        if (description != null) {
+            body.put("description", description);
+        }
+        Request httpRequest =
+                sign(new Request.Builder())
+                        .url(request.url())
+                        .header("User-Agent", "DMTools")
+                        .post(RequestBody.create(body.toString(), JSON))
+                        .build();
+        OkHttpClient creationClient =
+                getClient().newBuilder()
+                        .retryOnConnectionFailure(false)
+                        .build();
+        try (Response response = creationClient.newCall(httpRequest).execute()) {
+            if (!response.isSuccessful()) {
+                throw printAndCreateException(httpRequest, response);
+            }
+            return response.body() != null ? response.body().string() : "";
+        }
+    }
+
+    private static String normalizeBranchRef(String refName) {
+        if (refName == null) {
+            return null;
+        }
+        String trimmed = refName.trim();
+        if (trimmed.isEmpty() || trimmed.startsWith("refs/")) {
+            return trimmed;
+        }
+        return "refs/heads/" + trimmed;
     }
 
     @MCPTool(
@@ -2428,10 +2642,11 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
                 throw AbstractRestClient.printAndCreateException(request, response);
             }
         } catch (IOException e) {
-            logger.warn("PATCH connection error for URL: {} - Error: {} (Attempt: {}/3)", url, e.getMessage(), retryCount + 1);
-            
             // Check if it's a recoverable connection error
             boolean isRecoverableError = isRecoverableConnectionError(e);
+            if (isRecoverableError) {
+                logger.warn("PATCH connection error for URL: {} - Error: {} (Attempt: {}/3)", url, e.getMessage(), retryCount + 1);
+            }
             
             // Maximum of 3 attempts (2 retries)
             final int MAX_RETRIES = 2;
@@ -2450,7 +2665,7 @@ public abstract class AzureDevOpsClient extends AbstractRestClient implements Tr
                 return patch(genericRequest, retryCount + 1);
             } else {
                 if (!isRecoverableError) {
-                    logger.error("Non-recoverable PATCH connection error for URL: {}", url, e);
+                    logNonRecoverableError("PATCH", url, e);
                 } else if (retryCount >= MAX_RETRIES) {
                     logger.error("Max PATCH retries ({}) exceeded for URL: {}. Final error: {}", MAX_RETRIES, url, e.getMessage());
                 }

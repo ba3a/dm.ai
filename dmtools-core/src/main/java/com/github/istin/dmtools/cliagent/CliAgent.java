@@ -181,20 +181,25 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
                     inputContextPath != null ? inputContextPath.toAbsolutePath().toString() : null, ticket);
 
             // 5. Build and execute CLI commands with aggregated prompt
+            String inputFolderPath = inputContextPath != null ? inputContextPath.toAbsolutePath().toString() : null;
+            String workingDirPath = workingDirectory.toAbsolutePath().toString();
+            final ITicket resolvedTicket = ticket;
             CliCommandBuilder commandBuilder = new CliCommandBuilder(instructionProcessor, configuration);
             String[] finalCommands = commandBuilder.buildCommands(
                     params.getCliCommands(),
                     params.getCliPrompt(),
                     params.getCliPromptsConfig(),
                     params.getCliPromptsByTracker(),
-                    params.getCustomParams());
+                    params.getCustomParams(),
+                    conditionScript -> evaluateCliPromptCondition(
+                            conditionScript, params, inputFolderPath, workingDirPath, resolvedTicket));
 
             ensureOutputFolder(workingDirectory);
 
             AtomicReference<String> liveOutput = new AtomicReference<>("");
-            Runnable timerRunnable = buildTimerRunnable(params, liveOutput);
-            Consumer<Exception> errorHandler = buildErrorHandler(params, liveOutput);
-            Predicate<String> lineStopPredicate = buildLineStopPredicate(params, liveOutput);
+            Runnable timerRunnable = buildTimerRunnable(params, liveOutput, inputFolderPath);
+            Consumer<Exception> errorHandler = buildErrorHandler(params, liveOutput, inputFolderPath);
+            Predicate<String> lineStopPredicate = buildLineStopPredicate(params, liveOutput, inputFolderPath);
             int timerIntervalSeconds = params.getTimerIntervalSeconds();
             cliResult = cliHelper.executeCliCommandsWithResult(
                     finalCommands,
@@ -213,7 +218,7 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
             // 6. Post-JS action
             String response = extractResponse(cliResult, params);
             executeJsAction(params.getPostJSAction(), "postJSAction", params, response,
-                    inputContextPath != null ? inputContextPath.toAbsolutePath().toString() : null, ticket);
+                    inputFolderPath, ticket);
 
             // 7. Cache hook
             executeScriptHook(params.getCache(), "cache", params, workingDirectory, response);
@@ -272,7 +277,8 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
     }
 
     private Path createEmptyInputContext(CliAgentParams params, Path workingDirectory) throws IOException {
-        Path inputContextPath = workingDirectory.resolve("input").resolve(getContextId(params));
+        String folderName = CliExecutionHelper.toInputFolderName(getContextId(params));
+        Path inputContextPath = workingDirectory.resolve("input").resolve(folderName);
         Files.createDirectories(inputContextPath);
         return inputContextPath;
     }
@@ -337,7 +343,33 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
         }
     }
 
-    private Runnable buildTimerRunnable(CliAgentParams params, AtomicReference<String> liveOutput) {
+    private boolean evaluateCliPromptCondition(String conditionScript, CliAgentParams params,
+                                                String inputFolderPath, String workingDirPath, ITicket ticket) {
+        try {
+            Map<String, Object> extraBindings = new HashMap<>();
+            if (inputFolderPath != null) {
+                extraBindings.put("inputFolderPath", inputFolderPath);
+            }
+            if (workingDirPath != null) {
+                extraBindings.put("workingDirectory", workingDirPath);
+            }
+            if (ticket != null) {
+                extraBindings.put("ticket", ticket);
+            }
+            Object result = prepareJsExecutor(
+                    conditionScript, params, null, extraBindings.isEmpty() ? null : extraBindings, ticket)
+                    .execute();
+            boolean included = com.github.istin.dmtools.teammate.CliPromptsConfig.isConditionMet(result);
+            logger.info("Evaluated cliPrompts condition '{}' -> {}", conditionScript, included);
+            return included;
+        } catch (Exception e) {
+            logger.warn("cliPrompts condition '{}' failed (excluding section): {}", conditionScript, e.getMessage());
+            return false;
+        }
+    }
+
+    private Runnable buildTimerRunnable(CliAgentParams params, AtomicReference<String> liveOutput,
+                                         String inputFolderPath) {
         String timerJSAction = params.getTimerJSAction();
         if (timerJSAction == null || timerJSAction.trim().isEmpty()) {
             return null;
@@ -345,8 +377,11 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
         return () -> {
             try {
                 logger.info("Executing timerJSAction: {}", timerJSAction);
-                Map<String, Object> extraBindings = Collections.singletonMap(
-                        "currentCliOutput", liveOutput.get());
+                Map<String, Object> extraBindings = new HashMap<>();
+                extraBindings.put("currentCliOutput", liveOutput.get());
+                if (inputFolderPath != null) {
+                    extraBindings.put("inputFolderPath", inputFolderPath);
+                }
                 prepareJsExecutor(timerJSAction, params, null, extraBindings, null).execute();
             } catch (Exception e) {
                 logger.warn("timerJSAction execution failed (CLI continues): {}", e.getMessage(), e);
@@ -354,7 +389,8 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
         };
     }
 
-    private Consumer<Exception> buildErrorHandler(CliAgentParams params, AtomicReference<String> liveOutput) {
+    private Consumer<Exception> buildErrorHandler(CliAgentParams params, AtomicReference<String> liveOutput,
+                                                   String inputFolderPath) {
         String cliExecutionErrorJSAction = params.getCliExecutionErrorJSAction();
         if (cliExecutionErrorJSAction == null || cliExecutionErrorJSAction.trim().isEmpty()) {
             return null;
@@ -365,6 +401,9 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
                 Map<String, Object> extraBindings = new HashMap<>();
                 extraBindings.put("errorMessage", exception.getMessage());
                 extraBindings.put("currentCliOutput", liveOutput.get());
+                if (inputFolderPath != null) {
+                    extraBindings.put("inputFolderPath", inputFolderPath);
+                }
                 prepareJsExecutor(cliExecutionErrorJSAction, params, null, extraBindings, null).execute();
             } catch (Exception e) {
                 logger.warn("cliExecutionErrorJSAction execution failed: {}", e.getMessage(), e);
@@ -372,7 +411,8 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
         };
     }
 
-    private Predicate<String> buildLineStopPredicate(CliAgentParams params, AtomicReference<String> liveOutput) {
+    private Predicate<String> buildLineStopPredicate(CliAgentParams params, AtomicReference<String> liveOutput,
+                                                      String inputFolderPath) {
         String cliOutputLineJSAction = params.getCliOutputLineJSAction();
         if (cliOutputLineJSAction == null || cliOutputLineJSAction.trim().isEmpty()) {
             return null;
@@ -383,6 +423,9 @@ public class CliAgent extends AbstractJob<CliAgentParams, List<ResultItem>> {
                 Map<String, Object> extraBindings = new HashMap<>();
                 extraBindings.put("line", line);
                 extraBindings.put("currentCliOutput", liveOutput.get());
+                if (inputFolderPath != null) {
+                    extraBindings.put("inputFolderPath", inputFolderPath);
+                }
                 Object result = prepareJsExecutor(cliOutputLineJSAction, params, null, extraBindings, null).execute();
                 boolean stop = result != null && Boolean.parseBoolean(String.valueOf(result));
                 if (stop) {

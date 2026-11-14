@@ -91,9 +91,9 @@ SOURCE_GITHUB_REPOSITORY=my-repo
 
 **Agent scripts:** use the vendor-neutral `tracker_*` tools (for example `tracker_get_ticket`, `tracker_post_comment`) instead of `jira_*`; they are routed to GitHub by `DEFAULT_TRACKER` or by the key format.
 
-**Input folder:** the Teammate CLI input folder for `MyOrg/my-repo#123` is `input/MyOrg-my-repo-123/`.
+**Input folder:** the Teammate CLI input folder for `MyOrg/my-repo#123` is `input/gh-123/`.
 
-To trigger the pipeline from issue labels, see [github-actions-teammate.md](../../workflows/github-actions-teammate.md#triggering-from-github-issues).
+GitHub Actions workflows that trigger the pipeline from issue labels are maintained in [dmtools-agentic-workflows](https://github.com/IstiN/dmtools-agentic-workflows).
 
 ## GitHub Enterprise
 

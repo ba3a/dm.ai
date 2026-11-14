@@ -20,6 +20,7 @@ class JsEnvironmentShimTest {
     private static final Map<String, String> ENV = Map.of(
             "DEFAULT_TRACKER", "github",
             "ADO_PROJECT", "proj",
+            "GITHUB_REPOSITORY", "owner/repo",
             "SOURCE_GITHUB_TOKEN", "secret-token");
 
     private Value eval(String script) {
@@ -56,5 +57,17 @@ class JsEnvironmentShimTest {
     @Test
     void doesNotGrantAccessToOtherHostClasses() {
         assertEquals("undefined", eval("typeof java.lang.Runtime").asString());
+    }
+
+    @Test
+    void returnsGitHubContextSelectors() {
+        assertEquals("owner/repo", eval("java.lang.System.getenv('GITHUB_REPOSITORY')").asString());
+    }
+
+    @Test
+    void canBeStubbedByScriptsLikeAgentUnitTests() {
+        assertEquals("stub", eval("var o = java.lang.System.getenv;"
+                + " java.lang.System.getenv = function() { return 'stub'; };"
+                + " var r = java.lang.System.getenv('X'); java.lang.System.getenv = o; r").asString());
     }
 }

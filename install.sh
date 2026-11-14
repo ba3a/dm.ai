@@ -342,6 +342,10 @@ parse_installer_args() {
                 INSTALLER_NO_SKILL_FILES=true
                 shift
                 ;;
+            --global|--global-skills|--no-local-skills)
+                # Global-only skill placement (already the default for main install.sh; accepted as explicit CLI flag).
+                shift
+                ;;
             --skill)
                 if [ $# -lt 2 ]; then
                     error "Missing value for --skill. Use --skill jira"
@@ -377,10 +381,11 @@ parse_installer_args() {
                 shift
                 ;;
             --help|-h)
-                echo "Usage: install.sh [--skill <name>] [--skills=<name,name>] [--all-skills] [--skip-unknown] [--strict] [version]"
+                echo "Usage: install.sh [--skill <name>] [--skills=<name,name>] [--all-skills] [--global-skills] [--no-skills] [--skip-unknown] [--strict] [version]"
                 echo "  --skill <name>      Select a single skill. Repeat to add more skills."
                 echo "  --skills=<csv>      Allowed alias for comma-separated skill selection."
                 echo "  --all-skills        Install every supported skill."
+                echo "  --global-skills     Install skills only into user-level directories (~/.claude, ~/.cursor, ~/.copilot, ~/.codex, ~/.agents; default)"
                 echo "  --no-skills         Do not install skill files into agent directories (~/.claude, ...)"
                 echo "  --skip-unknown      Warn and continue when unknown skill names are supplied."
                 echo "  --strict            Legacy alias for strict invalid-skill handling."
@@ -579,7 +584,7 @@ installer_managed_jar_present() {
 }
 
 installer_managed_script_present() {
-    [ -s "$SCRIPT_PATH" ] && [ -x "$SCRIPT_PATH" ]
+    [ -s "$SCRIPT_PATH" ] && [ -x "$SCRIPT_PATH" ] && bash -n "$SCRIPT_PATH" >/dev/null 2>&1
 }
 
 read_installer_metadata_version() {
@@ -895,6 +900,45 @@ get_release_download_base() {
     echo "https://github.com/${REPO}/releases/download/${version}"
 }
 
+# Compare two stable CLI version tags (vX.Y.Z) and print the newer one.
+pick_newer_cli_version() {
+    local v1="$1"
+    local v2="$2"
+    if [ -z "$v1" ]; then
+        echo "$v2"
+        return 0
+    fi
+    if [ -z "$v2" ] || [ "$v1" = "$v2" ]; then
+        echo "$v1"
+        return 0
+    fi
+    printf '%s\n%s\n' "$v1" "$v2" | awk -F. '
+    {
+        raw = $0
+        sub(/^v/, "", $1)
+        maj = $1 + 0
+        min = $2 + 0
+        pat = $3 + 0
+        if (NR == 1 || maj > bmaj || (maj == bmaj && min > bmin) || (maj == bmaj && min == bmin && pat > bpat)) {
+            bmaj = maj; bmin = min; bpat = pat; best = raw
+        }
+    }
+    END { print best }'
+}
+
+# Resolve the latest CLI tag via GitHub /releases/latest HTTP redirect (does not consume GitHub REST API rate limits).
+get_latest_version_from_release_redirect() {
+    local effective_url
+    local tag
+    effective_url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' --connect-timeout 5 --max-time 15 "https://github.com/${REPO}/releases/latest" 2>/dev/null) || return 1
+    tag=$(printf '%s\n' "$effective_url" | sed -nE 's#.*/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+)$#\1#p' | head -1)
+    if [ -n "$tag" ]; then
+        echo "$tag"
+        return 0
+    fi
+    return 1
+}
+
 # Get latest CLI release version (filters out skill/standalone releases, paginates if needed)
 get_latest_version() {
     progress "Fetching latest CLI release information..." >&2
@@ -914,11 +958,27 @@ get_latest_version() {
     if fetch_manifest; then
         version=$(manifest_latest_value "version")
         if [ -n "$version" ] && echo "$version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            local redirect_version
+            redirect_version=$(get_latest_version_from_release_redirect || true)
+            if [ -n "$redirect_version" ]; then
+                local newer_version
+                newer_version=$(pick_newer_cli_version "$version" "$redirect_version")
+                if [ "$newer_version" != "$version" ]; then
+                    warn "Manifest version ($version) is behind GitHub latest release ($redirect_version); using $newer_version." >&2
+                    version="$newer_version"
+                fi
+            fi
             progress "Found latest CLI release from manifest: $version" >&2
             echo "$version"
             return 0
         fi
         warn "Manifest did not contain a valid latest CLI version, falling back to GitHub API." >&2
+    fi
+
+    if version=$(get_latest_version_from_release_redirect); then
+        progress "Found latest CLI release via redirect: $version" >&2
+        echo "$version"
+        return 0
     fi
 
     # Paginate through releases until a CLI release (^vX.Y.Z$) is found or no more pages
@@ -1059,6 +1119,9 @@ validate_not_html() {
                 return 1
             fi
         fi
+        if ! bash -n "$file" >/dev/null 2>&1; then
+            return 1
+        fi
     fi
     
     return 0
@@ -1140,7 +1203,13 @@ download_file() {
     local expected_checksum="${5:-}"
     local max_retries=3
     local retry_count=0
-    
+    local is_jar=false
+    if [[ "$desc" == *"JAR"* ]] || [[ "$output" == *.jar ]]; then
+        is_jar=true
+    fi
+    if [ "$is_jar" != true ]; then
+        rm -f "$output" 2>/dev/null
+    fi
     progress "Downloading $desc..."
     
     while [ $retry_count -lt $max_retries ]; do
@@ -1152,9 +1221,11 @@ download_file() {
             local curl_log
             curl_log=$(mktemp)
             local curl_exit_code=0
-            local is_jar=false
-            if [[ "$desc" == *"JAR"* ]] || [[ "$output" == *.jar ]]; then
-                is_jar=true
+            local curl_resume_args=()
+            if [ "$is_jar" = true ]; then
+                curl_resume_args=(-C -)
+            else
+                rm -f "$output" 2>/dev/null
             fi
 
             # Show the user what is being downloaded and from where.
@@ -1178,7 +1249,7 @@ download_file() {
                 # real error messages visible despite -s progress suppression.
                 local max_time=${DMTOOLS_DOWNLOAD_MAX_TIME:-3600}
                 curl -L --fail --connect-timeout 30 --max-time "$max_time" \
-                     -C - --speed-time 30 --speed-limit 1024 \
+                     "${curl_resume_args[@]}" --speed-time 30 --speed-limit 1024 \
                      -s -S "$url" -o "$output" >"$curl_log" 2>&1 || curl_exit_code=$?
 
                 if [ -s "$curl_log" ]; then
@@ -1221,7 +1292,13 @@ download_file() {
             info "Downloading $desc from $url (attempt $((retry_count + 1))/$max_retries) using wget..."
             local wget_progress="--progress=bar"
             [ -t 2 ] || wget_progress="--progress=dot:mega"
-            if wget -c $wget_progress --tries=1 --timeout=120 --read-timeout=30 "$url" -O "$output" 2>&1; then
+            local wget_resume_args=()
+            if [ "$is_jar" = true ]; then
+                wget_resume_args=(-c)
+            else
+                rm -f "$output" 2>/dev/null
+            fi
+            if wget "${wget_resume_args[@]}" $wget_progress --tries=1 --timeout=120 --read-timeout=30 "$url" -O "$output" 2>&1; then
                 info "Downloaded $desc ($(human_readable_size "$(stat_file_size "$output")"))"
                 download_success=true
             else
@@ -1811,8 +1888,10 @@ download_dmtools_shell_script() {
     local download_base
     download_base=$(get_release_download_base "$version")
     local script_url="${download_base}/dmtools.sh"
+    rm -f "$SCRIPT_PATH" 2>/dev/null
 
     # Download shell script - try multiple methods
+    # Method 1: Try redirect-based URL (standard GitHub release URL)
     # Method 1: Try redirect-based URL (standard GitHub release URL)
     if download_file "$script_url" "$SCRIPT_PATH" "DMTools shell script" "true"; then
         # Success with redirect URL
@@ -1980,7 +2059,7 @@ install_agent_skills() {
         args+=("--skills=${EFFECTIVE_SKILLS_CSV}")
     fi
     [ "$SKIP_UNKNOWN_SKILLS" = true ] && args+=(--skip-unknown)
-    if ! DMTOOLS_SKILL_RELEASE_BASE_URL="$base" bash "$script" "${args[@]}"; then
+    if ! DMTOOLS_SKILL_RELEASE_BASE_URL="$base" DMTOOLS_SKILLS_GLOBAL_ONLY=true bash "$script" "${args[@]}"; then
         warn "Skill installation did not complete; the DMTools CLI itself is installed."
     fi
     return 0

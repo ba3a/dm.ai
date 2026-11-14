@@ -140,7 +140,7 @@ public class CliExecutionHelper {
      * ({@code owner/repo#12}) becomes the router key {@code gh-12}, which resolves against the
      * configured repository, instead of a flattened {@code owner-repo-12} that no key shape matches.
      */
-    static String toInputFolderName(String ticketKey) {
+    public static String toInputFolderName(String ticketKey) {
         Matcher github = GITHUB_COMPOSITE_KEY.matcher(ticketKey);
         if (github.matches()) {
             return "gh-" + github.group(1);
@@ -603,9 +603,10 @@ public class CliExecutionHelper {
         // agent config actually reaches run-agent.sh.
         Map<String, String> jobOverrides = PropertyReader.getOverrides();
         if (!jobOverrides.isEmpty()) {
+            Map<String, String> resolvedOverrides = PropertyReader.resolveEnvVariables(jobOverrides, envVars);
             java.util.HashMap<String, String> merged = new java.util.HashMap<>(envVars);
             int skipped = 0;
-            for (Map.Entry<String, String> entry : jobOverrides.entrySet()) {
+            for (Map.Entry<String, String> entry : resolvedOverrides.entrySet()) {
                 String key = entry.getKey();
                 String value = entry.getValue();
                 if (key == null || key.isBlank() || value == null) {
@@ -616,7 +617,7 @@ public class CliExecutionHelper {
                 }
                 merged.put(key, value);
             }
-            int mergedCount = jobOverrides.size() - skipped;
+            int mergedCount = resolvedOverrides.size() - skipped;
             logger.info("Merging {} per-job envVariables override(s) into subprocess environment ({} skipped due to null/blank key or null value)",
                     mergedCount, skipped);
             envVars = merged;

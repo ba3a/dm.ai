@@ -262,8 +262,7 @@ public class JobJavaScriptBridge {
 
             // Expose java.lang.System.getenv for non-secret selectors such as DEFAULT_TRACKER, so
             // js/common/trackers.js picks the active tracker instead of falling back to Jira
-            jsContext.getBindings("js").putMember("java",
-                    JsEnvironmentShim.create(name -> new PropertyReader().getValue(name)));
+            bindJavaEnvironmentShim();
 
             // Expose MCP tools using generated infrastructure
             exposeMCPToolsUsingGenerated();
@@ -471,9 +470,79 @@ public class JobJavaScriptBridge {
             // Convert result to JavaScript-compatible format
             return convertToJSCompatible(result);
         } catch (Exception e) {
-            logger.error("Tool execution failed for {}: {}", toolName, e.getMessage(), e);
+            if (isExpectedCliNonZeroExit(toolName, jsArgs, e)) {
+                logger.debug("Tool {} exited with expected non-zero status: {}", toolName, e.getMessage());
+            } else if (logger.isTraceEnabled()) {
+                logger.error("Tool execution failed for {}: {}", toolName, e.getMessage(), e);
+            } else {
+                logger.error("Tool execution failed for {}: {}", toolName, e.getMessage());
+            }
             throw new RuntimeException("Tool execution failed: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Returns {@code true} when {@code cli_execute_command} was called with
+     * {@code expectNonZeroExit: true/"true"} (or is a known git exit-code probe)
+     * and failed due to a non-zero exit code.
+     */
+    private static boolean isExpectedCliNonZeroExit(String toolName, Object jsArgs, Throwable error) {
+        if (!"cli_execute_command".equals(toolName)) {
+            return false;
+        }
+        com.github.istin.dmtools.common.utils.CliCommandFailedException cliFailed = null;
+        for (Throwable t = error; t != null; t = t.getCause()) {
+            if (t instanceof com.github.istin.dmtools.common.utils.CliCommandFailedException) {
+                cliFailed = (com.github.istin.dmtools.common.utils.CliCommandFailedException) t;
+                break;
+            }
+        }
+        if (cliFailed == null) {
+            return false;
+        }
+        if (com.github.istin.dmtools.cli.CliCommandExecutor.isKnownExitCodeProbe(cliFailed.getCommand())) {
+            return true;
+        }
+        if (jsArgs == null) {
+            return false;
+        }
+        try {
+            if (jsArgs instanceof Map) {
+                Map<?, ?> map = (Map<?, ?>) jsArgs;
+                Object val = map.get("expectNonZeroExit");
+                if (val != null && Boolean.parseBoolean(String.valueOf(val))) {
+                    return true;
+                }
+                Object cmd = map.get("command");
+                return cmd != null && com.github.istin.dmtools.cli.CliCommandExecutor.isKnownExitCodeProbe(String.valueOf(cmd));
+            }
+            Value value = Value.asValue(jsArgs);
+            if (value != null && value.hasMembers()) {
+                if (value.hasMember("expectNonZeroExit")) {
+                    Value member = value.getMember("expectNonZeroExit");
+                    if (member != null && !member.isNull()) {
+                        boolean expected = member.isBoolean()
+                                ? member.asBoolean()
+                                : Boolean.parseBoolean(String.valueOf(member.as(Object.class)));
+                        if (expected) {
+                            return true;
+                        }
+                    }
+                }
+                if (value.hasMember("command")) {
+                    Value cmdMember = value.getMember("command");
+                    if (cmdMember != null && !cmdMember.isNull()) {
+                        String cmdStr = cmdMember.isString() ? cmdMember.asString() : String.valueOf(cmdMember.as(Object.class));
+                        if (com.github.istin.dmtools.cli.CliCommandExecutor.isKnownExitCodeProbe(cmdStr)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // Fall through to false
+        }
+        return false;
     }
 
     /**
@@ -751,6 +820,20 @@ public class JobJavaScriptBridge {
     }
 
     /**
+     * Binds the allow-listed {@code java.lang.System.getenv} shim as global {@code java}, unless a
+     * real {@code java} global with {@code lang} already exists (never break host access).
+     */
+    private void bindJavaEnvironmentShim() {
+        Value bindings = jsContext.getBindings("js");
+        Value existing = bindings.getMember("java");
+        if (existing != null && !existing.isNull() && existing.hasMember("lang")
+                && !JsEnvironmentShim.isShim(existing)) {
+            return;
+        }
+        bindings.putMember("java", JsEnvironmentShim.create(name -> new PropertyReader().getValue(name)));
+    }
+
+    /**
      * Proxy for set_env_variable(propertyName, envVarName) JS function.
      * Allows a JS agent to redirect a dmtools property to read from a different env variable.
      * The actual token value stays in Java — JS only provides the env var NAME.
@@ -850,7 +933,7 @@ public class JobJavaScriptBridge {
 
         // Create a JavaScript function that calls the generated MCP executor
         String jsFunction = String.format("""
-            function %s() {
+            globalThis.%s = function %s() {
                 // Handle both object parameter and individual arguments
                 var args = {};
                 
@@ -867,8 +950,8 @@ public class JobJavaScriptBridge {
                 }
                 %s
                 return executeToolViaJava('%s', args);
-            }
-            """, toolName, parameterMappingLogic.toString(), toolName, toolCallLogStatement, toolName);
+            };
+            """, toolName, toolName, parameterMappingLogic.toString(), toolName, toolCallLogStatement, toolName);
             
         try {
             jsContext.eval("js", jsFunction);
@@ -901,6 +984,9 @@ public class JobJavaScriptBridge {
 
             // Ensure set_env_variable is available for this execution
             jsContext.getBindings("js").putMember("set_env_variable", new SetEnvVariableProxy());
+
+            // Ensure java.lang.System.getenv (allow-listed) is available for this execution
+            bindJavaEnvironmentShim();
 
             // Node/js compat layer — default-off, same knob contract as
             // parallelWorkers (params.jobParams.nodeCompat === true).
@@ -1412,6 +1498,7 @@ public class JobJavaScriptBridge {
                                                          JSONObject parameters) {
         try {
             ensureJavaScriptContext();
+            bindJavaEnvironmentShim();
             setCurrentScriptDirectory(scriptDirectory == null || scriptDirectory.isEmpty()
                     ? "" : scriptDirectory + "/__jsr_job__.js");
             JsNodeCompat.Handle workerCompat = null;
